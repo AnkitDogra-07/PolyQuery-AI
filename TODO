@@ -1,0 +1,16 @@
+TODO: 
+Build evaluation dashboard:
+    Relevance score
+    Faithfulness score
+    Compression ratio
+    Retrieval latency
+    Answer length
+
+Add ablation study:
+    Show:
+    | Version            | Faithfulness | Token Cost |
+    | ------------------ | ------------ | ---------- |
+    | Basic RAG          | 72%          | 100%       |
+    | + Rerank           | 83%          | 100%       |
+    | + Compression      | 84%          | 70%        |
+    | + Entailment Check | 92%          | 110%       |

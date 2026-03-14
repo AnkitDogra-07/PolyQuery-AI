@@ -1,10 +1,9 @@
 TODO: 
-Build evaluation dashboard:
-    Relevance score
-    Faithfulness score
-    Compression ratio
-    Retrieval latency
-    Answer length
+    Human in the Loop: 
+    Web Search: 
+    VeriRAG: 
+    Tool:
+    Memory Retrieval: 
 
 Add ablation study:
     Show:

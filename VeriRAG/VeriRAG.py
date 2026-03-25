@@ -1,24 +1,22 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[93]:
+# In[42]:
 
 
 get_ipython().system('pip install python-dotenv langchain langchain-core langchain-community langchain-google-genai chromadb langchain-text-splitters beautifulsoup4 sentence-transformers einops langchainhub langsmith faiss-cpu pydantic rank_bm25 sentence-transformers')
-get_ipython().system('pip install --upgrade transformers accelerate')
 
 
 # ## Declaration
 
-# In[ ]:
+# In[43]:
 
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.documents import Document
 from langchain_core.output_parsers import JsonOutputParser
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_vertexai import ChatVertexAI
 import transformers
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
 import json
 import numpy as np
 import os
@@ -34,17 +32,12 @@ from sentence_transformers import CrossEncoder
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 import time
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-import torch
-
-
-
 
 
 load_dotenv()
-os.environ["GOOGLE_API_KEY"] = "AIzaSyBpyIDcNa7SfhMFGEKDNrdxLMoz2DtrBrQ"
-os.environ["LANGCHAIN_API_KEY"] = "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"
-os.environ["HUGGINGFACEHUB_API_TOKEN"] = "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"
+google_api_key = os.getenv("GOOGLE_API_KEY")
+langchain_api_key = os.getenv("LANGCHAIN_API_KEY")
+hf_token = os.getenv("HUGGINGFACEHUB_API_TOKEN")
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
 os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
 warnings.filterwarnings("ignore")
@@ -75,27 +68,17 @@ class GraphState(TypedDict):
 
 # ### Models
 
-# In[ ]:
+# In[44]:
 
 
-model_name = "google/flan-t5-base"
-
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-
-model.eval()
-
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model.to(device)
-
-
+llm_compression = ChatGoogleGenerativeAI(model="gemini-3-flash-preview")
 llm = ChatGoogleGenerativeAI(model="gemini-3-flash-preview")
 structured_llm = llm.with_structured_output(QueryOutput)
 cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 embeddings = HuggingFaceEmbeddings(model_name="nomic-ai/nomic-embed-text-v1",model_kwargs={"trust_remote_code": True})
 
 
-# In[96]:
+# In[45]:
 
 
 import random
@@ -127,7 +110,7 @@ def safe_llm_invoke(llm, prompt, retries=5):
 # | Expansion | generates **multiple search variations** |
 # 
 
-# In[97]:
+# In[46]:
 
 
 optimizer_prompt = ChatPromptTemplate.from_messages([
@@ -221,7 +204,7 @@ def query_intelligence_node(state):
 
 # VECTOR-DB, EMBEDDINGS & INGESTION
 
-# In[98]:
+# In[47]:
 
 
 documents = [
@@ -243,7 +226,7 @@ bm25_retriever.k = 5
 
 # RETRIEVER
 
-# In[99]:
+# In[48]:
 
 
 # Retrieve top 5 results from both BM25 and Vector retrievers, then deduplicate results
@@ -271,7 +254,7 @@ def hybrid_retrieve_node(state):
 
 # ## Cross Encoder & Re-Ranking
 
-# In[100]:
+# In[49]:
 
 
 # Rerank retrieved documents using cross-encoder, normalised scores and filter out low-relevance docs based on a threshold
@@ -296,10 +279,10 @@ def rerank_and_filter_node(state):
 
     top_docs = doc_scores[:5]
     top_scores = [score for _, score in top_docs]
-    print(top_scores)
-    print("----------------------------")
     max_score = max(top_scores)
     avg_score = sum(top_scores) / len(top_scores)
+    print(top_scores, max_score, avg_score)
+    print("----------------------------")
 
     threshold = 0.6
 
@@ -313,20 +296,21 @@ def rerank_and_filter_node(state):
                 "avg_score": float(avg_score)
             }
         }
-
+    print("rerank: ",[doc for doc, _ in top_docs])
+    print("--------------------------------------")
     return {
         "documents": [doc for doc, _ in top_docs],
         "doc_scores": top_scores
     }
 
 
-# In[101]:
+# In[ ]:
 
 
 def Retry_decision_logic(state):
 
     iteration = state.get("iteration", 0)
-    max_iterations = 1
+    max_iterations = 2
 
     if state.get("answer") == "I don't know" and iteration >= max_iterations:
         return "generate"
@@ -343,42 +327,16 @@ def Refine_query_node(state):
     }
 
 
-# ## GENERATION
-
-# In[102]:
+# In[51]:
 
 
-def t5_compress_batch(query, docs):
+def extract_text(response):
+    content = response.content
 
-    combined_docs = "\n\n".join(
-        [f"Doc {i+1}:\n{doc.page_content}" for i, doc in enumerate(docs)]
-    )
+    if isinstance(content, list):
+        return " ".join([item.get("text", "") for item in content]).strip()
 
-    prompt = f"""
-Extract ONLY relevant information for the query.
-
-Query: {query}
-
-Documents:
-{combined_docs}
-
-Relevant information:
-"""
-
-    inputs = tokenizer(
-        prompt,
-        return_tensors="pt",
-        truncation=True,
-        max_length=512
-    ).to(device)
-
-    with torch.no_grad():
-        outputs = model.generate(**inputs, max_new_tokens=150)
-
-    return tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-
-# In[103]:
+    return content.strip()
 
 
 def compress_documents_node(state):
@@ -386,33 +344,84 @@ def compress_documents_node(state):
     query = state["query"]
     docs = state.get("documents", [])[:3]
 
-    if not docs:
-        return {"documents": []}
+    compressed_docs = []
 
-    compressed_text = t5_compress_batch(query, docs)
+    for doc in docs:
+        prompt = f"""
+            You are a STRICT information extractor.
 
-    return {
-        "documents": [Document(page_content=compressed_text)]
-    }
+            Your job:
+            - COPY exact sentences from the document
+            - DO NOT explain
+            - DO NOT summarize
+            - DO NOT add any new words
+            - DO NOT say "no information" or give opinions
+
+            Rules:
+            - Only return text that EXISTS in the document
+            - If nothing is relevant, return: NONE
+
+            Query:
+            {query}
+
+            Document:
+            {doc.page_content}
+
+            Relevant sentences (copy exact text only):
+        """
+
+        response = safe_llm_invoke(llm_compression, prompt)
+        content = extract_text(response)
+
+        # 🔥 hallucination filter
+        bad_phrases = [
+            "does not contain",
+            "no relevant",
+            "based on the query",
+            "the document"
+        ]
+
+        if any(p in content.lower() for p in bad_phrases):
+            compressed_docs.append(doc)
+            continue
+
+        # 🔥 fallback logic
+        if content == "NONE" or len(content.split()) < 6:
+            compressed_docs.append(doc)
+        else:
+            compressed_docs.append(Document(page_content=content))
+
+    # 🔥 remove duplicates
+    seen = set()
+    unique_docs = []
+
+    for d in compressed_docs:
+        if d.page_content not in seen:
+            seen.add(d.page_content)
+            unique_docs.append(d)
+
+    return {"documents": unique_docs}
 
 
-# In[104]:
+# ## GENERATION
+
+# In[52]:
 
 
 generation_prompt = ChatPromptTemplate.from_template(
 """
-You are a strict assistant.
+    You are a strict assistant.
 
-Answer ONLY using the provided context.
-If the answer is not clearly present, say "I don't know".
+    Answer ONLY using the provided context.
+    If the answer is not clearly present, say "I don't know".
 
-Question:
-{query}
+    Question:
+    {query}
 
-Context:
-{context}
+    Context:
+    {context}
 
-Answer:
+    Answer:
 """
 )
 def generate_answer_node(state):
@@ -438,9 +447,352 @@ def generate_answer_node(state):
     return {"answer": response.content}
 
 
+# In[ ]:
+
+
+import json
+
+script = """
+# Script for filesystem corrective actions
+# Created: 01-Feb-2026
+# Author: Administrator_Team
+
+# -----------------------------
+# Global variables
+# -----------------------------
+LOG_FILE="/tmp/fs_corrective_action_$(date +%Y%m%d_%H%M%S).log"
+TIMEOUT_DURATION=300
+ALERT_THRESHOLD=80
+GRAINS_FILE="/usr/local/omcs-devops/etc/grains.json"
+HOME_THRESHOLD_MB=200
+
+# Color codes for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Variables to store before/after usage and product
+BEFORE_USAGE=""
+AFTER_USAGE=""
+PRODUCT=""
+IS_ROOT_FS=false
+
+# -----------------------------
+# Summary tracking (IMPROVED)
+# -----------------------------
+declare -a SUMMARY_REQUIRED
+declare -a SUMMARY_OK
+
+add_summary_required() { SUMMARY_REQUIRED+=("$1"); log_message "SUMMARY_REQUIRED: $1"; }
+add_summary_ok()       { SUMMARY_OK+=("$1");       log_message "SUMMARY_OK: $1"; }
+
+print_summary() {
+    print_header "Summary"
+
+    echo -e "${YELLOW}[ ACTION REQUIRED ]${NC}"
+    if [ ${#SUMMARY_REQUIRED[@]} -eq 0 ]; then
+        echo -e "${GREEN}No action needed for Root FS.${NC}"
+        echo -e "${RED}If non-root FS eg:(/u01/u02 etc..)Paste the above output & Transfer to apps team for cleanup.${NC}"
+    else
+        local i=1
+        for line in "${SUMMARY_REQUIRED[@]}"; do
+            echo -e "${RED}${i}) ${line}${NC}"
+            i=$((i+1))
+        done
+    fi
+
+    echo -e "\n${YELLOW}[ NO FURTHER ACTION NEEDED ]${NC}"
+    if [ ${#SUMMARY_OK[@]} -eq 0 ]; then
+        echo -e "${GREEN}None${NC}"
+
+    else
+        local j=1
+        for line in "${SUMMARY_OK[@]}"; do
+            echo -e "${GREEN}${j}) ${line}${NC}"
+            j=$((j+1))
+        done
+    fi
+}
+
+# -----------------------------
+# Function to run command with timeout
+# -----------------------------
+run_with_timeout() {
+    local timeout=$1
+    local cmd=$2
+    local output_file="/tmp/timeout_output_$$.tmp"
+
+    timeout "$timeout" bash -c "$cmd" > "$output_file" 2>&1
+    local status=$?
+
+    if [ $status -eq 124 ]; then
+        echo -e "${RED}TIMEOUT: Command exceeded ${timeout} seconds${NC}"
+        return 124
+    elif [ $status -ne 0 ]; then
+        echo -e "${RED}ERROR: Command failed with status $status${NC}"
+        return $status
+    fi
+
+    cat "$output_file"
+    rm -f "$output_file"
+    return 0
+}
+
+# -----------------------------
+# Function to cleanup old corrective action logs
+# -----------------------------
+cleanup_corrective_logs() {
+    local LOG_DIR="/tmp"
+    local PATTERN="fs_corrective_action_*"
+    local MAX_FILES=50
+
+    # Count the number of matching files
+    local file_count
+    file_count=$(ls -1 ${LOG_DIR}/${PATTERN} 2>/dev/null | wc -l)
+
+    if [ "$file_count" -gt "$MAX_FILES" ]; then
+        log_message "Found $file_count corrective action logs. Cleaning up old logs..."
+
+        # Keep the latest $MAX_FILES, delete older ones
+        ls -1t ${LOG_DIR}/${PATTERN} | tail -n +$((MAX_FILES+1)) | xargs -r rm -f
+
+        log_message "Cleanup completed. Retained latest $MAX_FILES logs."
+        add_summary_ok "Corrective action logs cleaned. Retained latest $MAX_FILES files."
+    else
+        log_message "Corrective action log count ($file_count) within limit. No cleanup needed."
+        add_summary_ok "Corrective action logs count ($file_count) within limit."
+    fi
+}
+# -----------------------------
+# Function to check Linux
+# -----------------------------
+detect_os_and_exit_if_not_linux() {
+  if [ "$(uname -s 2>/dev/null)" != "Linux" ]; then
+    echo "Non-Linux OS detected. Exiting."
+    exit 0
+  fi
+}
+
+# -----------------------------
+# Function to get current filesystem usage
+# -----------------------------
+get_fs_usage() {
+    local fs_path=$1
+    df -hP "$fs_path" | tail -1 | awk '{print "Size:", $2, "Used:", $3, "Avail:", $4, "Use%:", $5}'
+}
+
+# -----------------------------
+# Function to get product details
+# -----------------------------
+get_product_details() {
+    echo -e "${YELLOW}=============================================${NC}"
+    echo -e "${CYAN}Hostname:${NC} $(hostname -f 2>/dev/null || hostname)"
+    if [ -f "$GRAINS_FILE" ]; then
+        echo -e "${YELLOW}=============================================${NC}"
+        PRODUCT=$(grep '"product"' "$GRAINS_FILE" | head -1 | sed 's/.*"product"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+        if [ -n "$PRODUCT" ]; then
+            echo -e "${GREEN}Product extracted from inventory: $PRODUCT${NC}"
+        else
+            echo -e "${RED}Product field not found in grains.json${NC}"
+            PRODUCT="UNKNOWN"
+        fi
+    else
+        echo -e "${YELLOW}=============================================${NC}"
+        echo -e "${RED}Cannot fetch APPs details since inventory file doesn't exist${NC}"
+        echo -e "${RED}File not found: $GRAINS_FILE${NC}"
+        echo -e "${YELLOW}=============================================${NC}"
+        PRODUCT="UNKNOWN (Inventory missing)"
+    fi
+}
+
+# -----------------------------
+# Function to log messages
+# -----------------------------
+log_message() {
+    echo -e "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+}
+
+# -----------------------------
+# Function to print section headers
+# -----------------------------
+print_header() {
+    echo -e "\n${YELLOW}=============================================${NC}"
+    echo -e "${YELLOW}  $1${NC}"
+    echo -e "${YELLOW}=============================================${NC}"
+    log_message "$1"
+}
+
+# -----------------------------
+# Function to convert size to MB for comparison
+# -----------------------------
+convert_to_mb() {
+    local size="$1"
+    echo "$size" | awk '
+        function to_mb(v, u) {
+            if (u=="K") return v/1024
+            if (u=="M") return v
+            if (u=="G") return v*1024
+            if (u=="T") return v*1024*1024
+            return v
+        }
+        {
+            if (match($0, /^([0-9]+(\.[0-9]+)?)([KMGTP]?)$/, a)) {
+                v=a[1]+0
+                u=a[3]
+                printf "%.0f", to_mb(v,u)
+            } else {
+                printf "%.0f", 0
+            }
+        }
+    '
+}
+
+# -----------------------------
+# Function to check /tmp usage
+# -----------------------------
+check_tmp_usage() {
+    print_header "Checking /tmp usage"
+    local tmp_size
+    tmp_size=$(timeout "$TIMEOUT_DURATION" du -sh --exclude=".snapshot" /tmp 2>/dev/null | awk '{print $1}')
+    local tmp_size_mb
+    tmp_size_mb=$(convert_to_mb "$tmp_size")
+
+    echo "Current /tmp size : $tmp_size"
+
+    if [ "$tmp_size_mb" -gt 1024 ]; then
+        echo -e "${YELLOW}/tmp is larger than 1GB ($tmp_size)${NC}"
+        echo -e "${RED} If more than 1GB inform apps team to clear /tmp${NC}"
+        echo "Top 10 consumers in /tmp :"
+        timeout "$TIMEOUT_DURATION" du -ahx /tmp | sort -rh | head -n 10
+        add_summary_required "/tmp is $tmp_size (>1GB). Contact Apps team to clean (see top consumers above)."
+    else
+        echo -e "${GREEN}✓ /tmp is under 1GB ($tmp_size)${NC}"
+        add_summary_ok "/tmp is $tmp_size."
+    fi
+}
+
+# -----------------------------
+# Function to check /home usage
+# -----------------------------
+check_home_usage() {
+    local FOUND_LARGE_USER=false
+
+    for user_dir in /home/*; do
+        if [ -d "$user_dir" ]; then
+            local size_kb size_mb user size_human
+            size_kb=$(du -sk --exclude=".snapshot" "$user_dir" 2>/dev/null | awk '{print $1}')
+            size_mb=$((size_kb / 1024))
+            if [ "$size_mb" -gt "$HOME_THRESHOLD_MB" ]; then
+                FOUND_LARGE_USER=true
+                user=$(basename "$user_dir")
+                size_human=$(du -sh --exclude=".snapshot" "$user_dir" 2>/dev/null | awk '{print $1}')
+                echo -e "\n"
+                print_header "/home Usage - Below user is more than ${HOME_THRESHOLD_MB}MB used inform them to clear"
+                echo "User '$user' is using $size_human (> ${HOME_THRESHOLD_MB}MB)"
+                add_summary_required "/home user '$user' is using $size_human (> ${HOME_THRESHOLD_MB}MB). Ask user/app owner to clean."
+                break
+            fi
+        fi
+    done
+
+    if [ "$FOUND_LARGE_USER" = false ]; then
+        echo -e "\n${GREEN}No users in /home using > ${HOME_THRESHOLD_MB}MB${NC}"
+        add_summary_ok "/home: no users > ${HOME_THRESHOLD_MB}MB."
+    fi
+}
+
+# -----------------------------
+# Function to check timeout for du command
+# -----------------------------
+run_du_analysis() {
+    local fs_path=$1
+    local timeout_output="/tmp/du_output_$$.tmp"
+
+    print_header "Running du analysis on $fs_path"
+    echo -e "\n"
+
+    timeout "$TIMEOUT_DURATION" du -ahx --exclude=".snapshot" "$fs_path" 2>/dev/null | sort -rh | head -n 10 > "$timeout_output" 2>&1
+    local timeout_status=$?
+
+    if [ $timeout_status -eq 124 ]; then
+        echo -e "${RED}WARNING: du command timed out after 5 minutes${NC}"
+        log_message "ERROR: du command timed out on $fs_path"
+        rm -f "$timeout_output"
+        add_summary_required "du analysis on $fs_path timed out after ${TIMEOUT_DURATION}s. Run manual du during low IO window."
+        return 1
+    elif [ $timeout_status -ne 0 ]; then
+        echo -e "${RED}ERROR: du command failed with status $timeout_status${NC}"
+        log_message "ERROR: du command failed on $fs_path with status $timeout_status"
+        rm -f "$timeout_output"
+        add_summary_required "du analysis on $fs_path failed (rc=$timeout_status). Investigate permissions/FS."
+        return 1
+    fi
+
+    cat "$timeout_output"
+    log_message "du output for $fs_path:"
+    cat "$timeout_output" >> "$LOG_FILE"
+
+    du_total=$(head -n 1 "$timeout_output" | awk '{print $1}')
+
+    if [ "$fs_path" = "/" ]; then
+        compare_du_df "$fs_path" "$du_total"
+        local compare_status=$?
+    else
+        compare_status=0
+    fi
+
+    rm -f "$timeout_output"
+    return $compare_status
+}
+
+# -----------------------------
+# Function to compare du and df outputs
+# -----------------------------
+compare_du_df() {
+    local fs_path=$1
+    local du_total=$2
+
+    print_header "Comparing du and df outputs for $fs_path"
+
+    df_output=$(timeout "$TIMEOUT_DURATION" df -hP "$fs_path" | tail -1)
+    df_used=$(echo "$df_output" | awk '{print $3}')
+
+    du_mb=$(convert_to_mb "$du_total")
+    df_mb=$(convert_to_mb "$df_used")
+
+    if [ "$df_mb" -gt 0 ]; then
+        diff_mb=$(( du_mb - df_mb ))
+        diff_percent=$(( diff_mb * 100 / df_mb ))
+    else
+        diff_mb=0
+        diff_percent=0
+    fi
+
+    if [ "${diff_percent#-}" -lt 5 ]; then
+        echo -e "${GREEN}✓ Size used is matching: $du_total matches $df_used (within 5% tolerance)${NC}"
+        echo -e "${GREEN}  du shows: $du_total, df shows: $df_used${NC}"
+        log_message "SUCCESS: du ($du_total) matches df ($df_used) within tolerance"
+        add_summary_ok "du vs df for $fs_path: within tolerance (du=$du_total, df=$df_used)."
+        return 0
+    else
+        echo -e "${RED}✗ Size used is NOT matching: $du_total != $df_used${NC}"
+        echo -e "...
+
+"""
+
+one_line_json = json.dumps({"script": script}, ensure_ascii=False)
+print(one_line_json)
+
+with open('sample.json', 'w+', encoding="utf-8") as f:
+    f.write(one_line_json)
+
+
 # ## Graph Compliation
 
-# In[105]:
+# In[53]:
 
 
 builder = StateGraph(GraphState)
@@ -464,7 +816,8 @@ builder.add_conditional_edges(
     Retry_decision_logic,
     {
         "retry": "Refine_query",
-        "generate": "generate"
+        "generate": "compress"
+        # "generate": "generate"
     }
 )
 
@@ -479,7 +832,7 @@ display(Image(graph.get_graph(xray=True).draw_mermaid_png()))
 
 # ## Inferencing RAG
 
-# In[106]:
+# In[54]:
 
 
 result = graph.invoke({
@@ -489,9 +842,5 @@ result = graph.invoke({
 })
 print(result["answer"])
 
-
-# In[ ]:
-
-
-
+# compression is changing the docs printed below, ig need to change the prompt for compression
 

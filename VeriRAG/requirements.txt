@@ -22,3 +22,8 @@ wandb
 spacy
 torchinfo
 scikit-learn
+# !curl "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-3-flash-preview:streamGenerateContent?key=AQ.Ab8RN6IKvcELHlpAKhdN5wa9T2SlLBpKsi_yR9r2NJSVCzBu6g" -X POST -H "Content-Type: application/json" -d '{"contents":[{"role":"user","parts":[{"text":"Explain how AI works in a few words"}]}]}'
+
+# # # In terminal google cloud vertex ai setup
+# # # !curl https://sdk.cloud.google.com | bash
+# # ! gcloud auth application-default login
